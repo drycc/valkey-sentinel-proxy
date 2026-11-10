@@ -9,3 +9,6 @@ clean:
 
 test:
 	go test -v ./... -race
+
+test-failover:
+	bash _scripts/test_failover.sh

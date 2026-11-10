@@ -1,4 +1,4 @@
-module github.com/drycc-addons/redis-sentinel-proxy
+module github.com/drycc-addons/valkey-sentinel-proxy
 
 go 1.25
 

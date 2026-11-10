@@ -3,39 +3,40 @@ package main
 import (
 	"net"
 	"os"
+	"reflect"
 	"testing"
-
-	"github.com/valkey-io/valkey-go"
+	"time"
 )
 
 func TestMain(m *testing.M) {
-	// Save original flag values
 	originalListen := *listen
 	originalMaster := *master
 	originalMaxProcs := *maxProcs
 	originalSentinelAddr := *sentinelAddr
 	originalSentinelUser := *sentinelUser
 	originalSentinelPass := *sentinelPass
+	originalNodeUser := *nodeUser
+	originalNodePass := *nodePass
+	originalRefreshInterval := *topologyRefreshInterval
 
-	// Run tests
 	code := m.Run()
 
-	// Restore original flag values
 	*listen = originalListen
 	*master = originalMaster
 	*maxProcs = originalMaxProcs
 	*sentinelAddr = originalSentinelAddr
 	*sentinelUser = originalSentinelUser
 	*sentinelPass = originalSentinelPass
-
+	*nodeUser = originalNodeUser
+	*nodePass = originalNodePass
+	*topologyRefreshInterval = originalRefreshInterval
 	os.Exit(code)
 }
 
 func TestFlagDefaults(t *testing.T) {
-	// Test case: Verify default flag values
 	tests := []struct {
 		name     string
-		flagPtr  interface{}
+		actual   interface{}
 		expected interface{}
 	}{
 		{"listen default", *listen, ":9999"},
@@ -44,177 +45,122 @@ func TestFlagDefaults(t *testing.T) {
 		{"sentinelAddr default", *sentinelAddr, ":26379"},
 		{"sentinelUser default", *sentinelUser, ""},
 		{"sentinelPass default", *sentinelPass, ""},
+		{"nodeUser default", *nodeUser, ""},
+		{"nodePass default", *nodePass, ""},
+		{"topology refresh default", *topologyRefreshInterval, 5 * time.Second},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.flagPtr != tt.expected {
-				t.Errorf("Expected %v, got %v", tt.expected, tt.flagPtr)
+			if tt.actual != tt.expected {
+				t.Errorf("actual = %v, want %v", tt.actual, tt.expected)
 			}
 		})
 	}
 }
 
-func TestResolveTCPAddr(t *testing.T) {
-	// Test case: Valid address resolution
-	testAddr := ":9999"
-	addr, err := net.ResolveTCPAddr("tcp", testAddr)
-	if err != nil {
-		t.Fatalf("Failed to resolve valid address %s: %v", testAddr, err)
+func TestParseSentinelAddrs(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    []string
+		wantErr bool
+	}{
+		{name: "single", raw: "127.0.0.1:26379", want: []string{"127.0.0.1:26379"}},
+		{name: "multiple with whitespace", raw: " s1:26379, s2:26380 , s3:26381 ", want: []string{"s1:26379", "s2:26380", "s3:26381"}},
+		{name: "duplicates retain order", raw: "s2:26379,s1:26379,s2:26379", want: []string{"s2:26379", "s1:26379", "s2:26379"}},
+		{name: "empty", raw: "", wantErr: true},
+		{name: "blank", raw: "  ", wantErr: true},
+		{name: "empty middle item", raw: "s1:26379,,s2:26379", wantErr: true},
+		{name: "empty first item", raw: ",s1:26379", wantErr: true},
+		{name: "empty last item", raw: "s1:26379,", wantErr: true},
 	}
-
-	if addr.Port != 9999 {
-		t.Errorf("Expected port 9999, got %d", addr.Port)
-	}
-}
-
-func TestResolveTCPAddrInvalid(t *testing.T) {
-	// Test case: Invalid address resolution should fail
-	invalidAddresses := []string{
-		"invalid:address:format",
-		":99999999",            // Port too large
-		"256.256.256.256:8080", // Invalid IP
-	}
-
-	for _, addr := range invalidAddresses {
-		t.Run("invalid_"+addr, func(t *testing.T) {
-			_, err := net.ResolveTCPAddr("tcp", addr)
-			if err == nil {
-				t.Errorf("Expected error when resolving invalid address %s, got nil", addr)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseSentinelAddrs(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseSentinelAddrs(%q) = %v, nil, want error", tc.raw, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSentinelAddrs(%q) error = %v", tc.raw, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseSentinelAddrs(%q) = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
 	}
 }
 
 func TestClientOptionConstruction(t *testing.T) {
-	// Test case: Verify ClientOption construction with different values
-	testCases := []struct {
-		name         string
-		sentinelAddr string
-		sentinelUser string
-		sentinelPass string
-		master       string
-	}{
-		{
-			name:         "Basic configuration",
-			sentinelAddr: ":26379",
-			sentinelUser: "",
-			sentinelPass: "",
-			master:       "mymaster",
-		},
-		{
-			name:         "With authentication",
-			sentinelAddr: "127.0.0.1:26379",
-			sentinelUser: "admin",
-			sentinelPass: "password123",
-			master:       "redis-master",
-		},
-		{
-			name:         "Custom port",
-			sentinelAddr: "localhost:16379",
-			sentinelUser: "user",
-			sentinelPass: "pass",
-			master:       "custom-master",
-		},
+	*sentinelAddr = "s1:26379, s2:26379"
+	*sentinelUser = "sentinel-user"
+	*sentinelPass = "sentinel-pass"
+	*nodeUser = "node-user"
+	*nodePass = "node-pass"
+	*topologyRefreshInterval = 2 * time.Second
+
+	option, serverOptions, err := proxyConfiguration()
+	if err != nil {
+		t.Fatalf("proxyConfiguration() error = %v", err)
 	}
+	if want := []string{"s1:26379", "s2:26379"}; !reflect.DeepEqual(option.InitAddress, want) {
+		t.Fatalf("InitAddress = %v, want %v", option.InitAddress, want)
+	}
+	if option.Username != "sentinel-user" || option.Password != "sentinel-pass" {
+		t.Fatal("Sentinel credentials were not preserved")
+	}
+	if option.Sentinel.MasterSet != "" {
+		t.Fatalf("Sentinel.MasterSet = %q, want empty for direct Sentinel controls", option.Sentinel.MasterSet)
+	}
+	if len(serverOptions) != 2 {
+		t.Fatalf("ServerOption count = %d, want node credentials and refresh interval", len(serverOptions))
+	}
+}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			clientOption := valkey.ClientOption{
-				InitAddress: []string{tc.sentinelAddr},
-				Username:    tc.sentinelUser,
-				Password:    tc.sentinelPass,
-				Sentinel: valkey.SentinelOption{
-					MasterSet: tc.master,
-				},
-			}
+func TestClientOptionConstructionRejectsInvalidConfiguration(t *testing.T) {
+	*sentinelAddr = "s1:26379,,s2:26379"
+	if _, _, err := proxyConfiguration(); err == nil {
+		t.Fatal("proxyConfiguration() error = nil for empty Sentinel item")
+	}
+}
 
-			// Verify the client option is constructed correctly
-			if len(clientOption.InitAddress) != 1 || clientOption.InitAddress[0] != tc.sentinelAddr {
-				t.Errorf("Expected InitAddress [%s], got %v", tc.sentinelAddr, clientOption.InitAddress)
-			}
+func TestResolveTCPAddr(t *testing.T) {
+	addr, err := net.ResolveTCPAddr("tcp", ":9999")
+	if err != nil {
+		t.Fatalf("ResolveTCPAddr() error = %v", err)
+	}
+	if addr.Port != 9999 {
+		t.Fatalf("port = %d, want 9999", addr.Port)
+	}
+}
 
-			if clientOption.Username != tc.sentinelUser {
-				t.Errorf("Expected Username %s, got %s", tc.sentinelUser, clientOption.Username)
-			}
-
-			if clientOption.Password != tc.sentinelPass {
-				t.Errorf("Expected Password %s, got %s", tc.sentinelPass, clientOption.Password)
-			}
-
-			if clientOption.Sentinel.MasterSet != tc.master {
-				t.Errorf("Expected MasterSet %s, got %s", tc.master, clientOption.Sentinel.MasterSet)
+func TestResolveTCPAddrInvalid(t *testing.T) {
+	for _, addr := range []string{"invalid:address:format", ":99999999", "256.256.256.256:8080"} {
+		t.Run(addr, func(t *testing.T) {
+			if _, err := net.ResolveTCPAddr("tcp", addr); err == nil {
+				t.Fatalf("ResolveTCPAddr(%q) error = nil", addr)
 			}
 		})
 	}
 }
 
-// Test flag parsing behavior
 func TestFlagParsing(t *testing.T) {
-	// Test case: Verify flags can be set programmatically
-	// Note: This test modifies global flags, so we need to be careful
-
-	// Save original values
-	origListen := *listen
-	origMaster := *master
-	origMaxProcs := *maxProcs
-
-	// Set test values
-	testListen := ":8888"
-	testMaster := "testmaster"
-	testMaxProcs := 2
-
-	*listen = testListen
-	*master = testMaster
-	*maxProcs = testMaxProcs
-
-	// Verify values are set
-	if *listen != testListen {
-		t.Errorf("Expected listen %s, got %s", testListen, *listen)
-	}
-
-	if *master != testMaster {
-		t.Errorf("Expected master %s, got %s", testMaster, *master)
-	}
-
-	if *maxProcs != testMaxProcs {
-		t.Errorf("Expected maxProcs %d, got %d", testMaxProcs, *maxProcs)
-	}
-
-	// Restore original values
-	*listen = origListen
-	*master = origMaster
-	*maxProcs = origMaxProcs
-}
-
-// Benchmark test for address resolution
-func BenchmarkResolveTCPAddr(b *testing.B) {
-	addr := ":9999"
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := net.ResolveTCPAddr("tcp", addr)
-		if err != nil {
-			b.Fatalf("Failed to resolve address: %v", err)
-		}
+	*listen = ":8888"
+	*master = "testmaster"
+	*maxProcs = 2
+	if *listen != ":8888" || *master != "testmaster" || *maxProcs != 2 {
+		t.Fatal("flag values were not applied")
 	}
 }
 
-// Benchmark test for ClientOption creation
 func BenchmarkClientOptionCreation(b *testing.B) {
-	sentinelAddr := ":26379"
-	sentinelUser := "user"
-	sentinelPass := "pass"
-	master := "mymaster"
-
+	*sentinelAddr = "s1:26379,s2:26379"
+	*sentinelUser = "sentinel-user"
+	*sentinelPass = "sentinel-pass"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = valkey.ClientOption{
-			InitAddress: []string{sentinelAddr},
-			Username:    sentinelUser,
-			Password:    sentinelPass,
-			Sentinel: valkey.SentinelOption{
-				MasterSet: master,
-			},
-		}
+		_, _, _ = proxyConfiguration()
 	}
 }

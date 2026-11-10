@@ -13,26 +13,64 @@ make build
 ### Command
 
 ```bash
-# ./bin/redis-sentinel-proxy --help
-Usage of redis-sentinel-proxy:
+# ./_dist/valkey-sentinel-proxy --help
+Usage of valkey-sentinel-proxy:
   -listen string
         listen address (default ":9999")
   -master string
-        name of the master redis node
+        name of the master valkey node
   -max-procs int
         sets the maximum number of CPUs that can be executing (default 1)
   -sentinel-addr string
-        remote sentinel address (default ":26379")
+        comma-separated Sentinel addresses (default ":26379")
   -sentinel-pass string
-        password to use when connecting to the sentinel server.
+        password to use when connecting to Sentinel servers
   -sentinel-user string
-        username to use when connecting to the sentinel server.
+        username to use when connecting to Sentinel servers
+  -node-pass string
+        password to use when validating Valkey data nodes
+  -node-user string
+        username to use when validating Valkey data nodes
+  -topology-refresh-interval duration
+        interval for reconciling the Sentinel topology (default 5s)
 ```
+
+Example:
+
+```bash
+./_dist/valkey-sentinel-proxy \
+  -listen :9999 \
+  -master mymaster \
+  -sentinel-addr "sentinel-1:26379,sentinel-2:26379,sentinel-3:26379" \
+  -sentinel-user "<sentinel-user>" \
+  -sentinel-pass "<sentinel-password>" \
+  -node-user "<data-node-user>" \
+  -node-pass "<data-node-password>"
+```
+
+Sentinel credentials and data-node credentials are independent. The proxy does not implicitly reuse Sentinel credentials on data nodes. Leave `node-user` and `node-pass` empty when data nodes allow unauthenticated `ROLE` commands. If data nodes use the same credentials as Sentinel, configure the same values explicitly in both places.
 
 ## Architecture
 
-Each client connection is wrapped with a session, which spawns two goroutines to read request from and write response to the client. Each session appends it's request to dispatcher's request queue, then dispatcher route request to the right task runner according key hash and slot table. Task runner sends requests to its backend server and read responses from it.
-Upon cluster topology changed, backend server will response MOVED or ASK error. These error is handled by session, by sending request to destination server directly. Session will trigger dispatcher to update slot info on MOVED error. When connection error is returned by task runner, session will trigger dispather to reload topology.
+For each new downstream connection, the proxy asks the configured Sentinels for the current primary and establishes a short-lived connection to the candidate to execute `ROLE`. Only a candidate reporting `master` is accepted. The proxy then starts transparent TCP forwarding; it does not route individual commands or replay writes.
+
+The proxy subscribes to Sentinel `+switch-master` events and reconciles the topology every 5 seconds by default. Events are triggers for revalidation, not authoritative routing decisions. When a new primary is confirmed, sessions connected to the old address are closed. A session whose upstream is explicitly found to be a replica is also closed even if no replacement primary is available yet. Temporary Sentinel or validation failures alone do not cause mass disconnection.
+
+Clients must enable automatic reconnection. On reconnection, the proxy resolves and validates the primary again. Existing connection state such as authentication, selected DB, transactions, and subscriptions is not migrated. The additional validation connection adds one short-lived data-node connection per new client connection.
+
+### Split-brain limitations
+
+`ROLE` cannot identify an old primary that still reports `master`, so this proxy does not claim to prevent split-brain writes or data loss. Use at least three Sentinels in independent failure domains and consider `min-replicas-to-write`, `min-replicas-max-lag`, and external fencing where required. Valkey replication is asynchronous; acknowledged writes can still be lost during failover.
+
+### Failover integration test
+
+With Podman and a Valkey container image available, run:
+
+```bash
+make test-failover
+```
+
+Set `PODMAN` or `VALKEY_IMAGE` to override the container runtime or image. The test starts real data nodes and Sentinels, verifies old-session disconnection and reconnection to the new primary, checks rejection of a known replica, and cleans up its containers and proxy process.
 
 ## Performance
 
@@ -97,5 +135,5 @@ The Drycc project welcomes contributions from all developers. The high-level pro
 * Drycc project maintainers will review your code.
 * After two maintainers approve it, they will merge your PR.
 
-[prs]: https://github.com/drycc-addons/redis-sentinel-proxy/pulls
-[issues]: https://github.com/drycc-addons/redis-sentinel-proxy/issues
+[prs]: https://github.com/drycc-addons/valkey-sentinel-proxy/pulls
+[issues]: https://github.com/drycc-addons/valkey-sentinel-proxy/issues
