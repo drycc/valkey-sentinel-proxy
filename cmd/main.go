@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/drycc-addons/valkey-sentinel-proxy/proxy"
+	"github.com/drycc/valkey-sentinel-proxy/proxy"
 	"github.com/valkey-io/valkey-go"
 )
 

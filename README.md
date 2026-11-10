@@ -135,5 +135,5 @@ The Drycc project welcomes contributions from all developers. The high-level pro
 * Drycc project maintainers will review your code.
 * After two maintainers approve it, they will merge your PR.
 
-[prs]: https://github.com/drycc-addons/valkey-sentinel-proxy/pulls
-[issues]: https://github.com/drycc-addons/valkey-sentinel-proxy/issues
+[prs]: https://github.com/drycc/valkey-sentinel-proxy/pulls
+[issues]: https://github.com/drycc/valkey-sentinel-proxy/issues
